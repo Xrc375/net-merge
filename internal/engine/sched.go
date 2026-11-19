@@ -62,6 +62,7 @@ type Slot struct {
 	flows           [2]map[*flowActivity]struct{}
 	udpFlows        [2]map[*udpFlowActivity]struct{}
 	gameActive      bool
+	ecoSleep        bool
 
 	// The adapter's total traffic from the OS's counters (all apps, not only net-merge's flows).
 	linkIn, linkOut         uint64
@@ -151,12 +152,14 @@ type SlotStats struct {
 // discounts idle TCP sockets; static mode
 // retains weighted least-open-flows. Data transfer accounting stays lock-free.
 type Scheduler struct {
-	mu       sync.Mutex
-	slots    []*Slot
-	auto     bool
-	gameMode bool
-	limits   map[string]float64 // adapter name -> Mbit/s, 0 or absent = unlimited
-	now      func() time.Time
+	mu          sync.Mutex
+	slots       []*Slot
+	auto        bool
+	gameMode    bool
+	ecoMode     bool
+	ecoLowSince time.Time
+	limits      map[string]float64 // adapter name -> Mbit/s, 0 or absent = unlimited
+	now         func() time.Time
 }
 
 func NewScheduler(nics []nics.Nic) *Scheduler {
@@ -315,6 +318,7 @@ func (s *Scheduler) Tick(dt time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
+	anyGame := false
 	for _, sl := range s.slots {
 		active := false
 		for _, f := range []Family{Fam4, Fam6} {
@@ -326,6 +330,9 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			}
 		}
 		sl.gameActive = active
+		if active {
+			anyGame = true
+		}
 	}
 	sec := dt.Seconds()
 	for i, sl := range slots {
@@ -406,6 +413,13 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			}
 		}
 	}
+	var totalRate float64
+	for _, sl := range s.slots {
+		if sl.present {
+			totalRate += sl.rateIn[Fam4] + sl.rateOut[Fam4] + sl.rateIn[Fam6] + sl.rateOut[Fam6]
+		}
+	}
+	s.updateEcoLocked(now, anyGame, totalRate)
 }
 
 // Acquire picks an IPv4 NIC for a new flow, skipping the ones in skip. The caller must Release it.
@@ -461,6 +475,9 @@ func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
 		score := float64(load+1) / sl.weight[f]
 		if s.gameMode && sl.gameActive && len(pool) > 1 {
 			score += 1000
+		}
+		if s.ecoMode && sl.ecoSleep && len(pool) > 1 {
+			score += 10000
 		}
 		if score < bestScore {
 			best, bestScore = sl, score

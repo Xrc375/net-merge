@@ -51,15 +51,15 @@ type trayUI struct {
 	limitUnlim  [trayRows]*systray.MenuItem
 	limitPreset [trayRows][]*systray.MenuItem
 
-	header, toggleItem, v6Item, gameItem, autoItem, signInItem *systray.MenuItem
-	versionItem                                                *systray.MenuItem
-	rows                                                       []*systray.MenuItem
-	lastOn                                                     *bool
-	lastHeader                                                 string
-	lastTip                                                    string
-	lastRows                                                   [trayRows]string
-	lastErr                                                    string
-	busyUntil                                                  time.Time
+	header, toggleItem, v6Item, gameItem, ecoItem, autoItem, signInItem *systray.MenuItem
+	versionItem                                                         *systray.MenuItem
+	rows                                                                []*systray.MenuItem
+	lastOn                                                              *bool
+	lastHeader                                                          string
+	lastTip                                                             string
+	lastRows                                                            [trayRows]string
+	lastErr                                                             string
+	busyUntil                                                           time.Time
 }
 
 func (u *trayUI) onReady() {
@@ -96,6 +96,7 @@ func (u *trayUI) onReady() {
 	systray.AddSeparator()
 	u.v6Item = systray.AddMenuItemCheckbox("Use all adapters (IPv6 only if every adapter has it)", "Ticked: apps are pushed to IPv4 so every adapter is used. Unticked: IPv6 is allowed and funnels onto the adapters that have it.", u.bal.V6Mode() == engine.V6Auto)
 	u.gameItem = systray.AddMenuItemCheckbox("Keep a connection free for games and calls", "Detects active game or voice UDP streams and keeps new downloads off that connection.", u.sched.GameMode())
+	u.ecoItem = systray.AddMenuItemCheckbox("Eco Mode (Consolidate traffic when idle)", "Prefers a primary adapter during low traffic and restores normal adapter distribution when traffic increases.", u.sched.EcoMode())
 	u.autoItem = systray.AddMenuItemCheckbox("Pause when there is only one connection", "Pauses merging by itself when fewer than two connections have internet, and starts it again when a second one works. Pausing or starting by hand always wins.", u.ap.enabled)
 	u.signInItem = systray.AddMenuItemCheckbox("Start at sign-in", "Starts net-merge when you sign in, with no password or admin prompt.", platform.AutostartEnabled())
 	u.toggleItem = systray.AddMenuItem("Start merging", "")
@@ -130,6 +131,14 @@ func (u *trayUI) onReady() {
 				} else {
 					u.gameItem.Check()
 					u.sched.SetGameMode(true)
+				}
+			case <-u.ecoItem.ClickedCh:
+				if u.ecoItem.Checked() {
+					u.ecoItem.Uncheck()
+					u.sched.SetEcoMode(false)
+				} else {
+					u.ecoItem.Check()
+					u.sched.SetEcoMode(true)
 				}
 			case <-u.autoItem.ClickedCh:
 				if u.autoItem.Checked() {
