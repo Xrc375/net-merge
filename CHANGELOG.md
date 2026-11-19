@@ -5,6 +5,12 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [0.3.8-eco] - 2026-11-19
+
+### Added
+- **Eco Mode (Consolidate traffic when idle)**: System tray toggle that prefers the best eligible primary adapter when total traffic stays below 5 Mbps for 5 seconds and no game/voice UDP activity is active, immediately restoring normal multi-adapter distribution when traffic increases or game flows start.
+- **Opt-in Game Mode**: System tray toggle to steer new flows away from adapters carrying active real-time game/voice UDP traffic.
+
 ## [0.3.7] - 2026-11-09
 
 ### Fixed
