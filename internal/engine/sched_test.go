@@ -503,7 +503,7 @@ func TestGameModeSteersNewFlows(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		now = now.Add(time.Second)
 		for p := 0; p < 20; p++ {
-			u.record(120, &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 27015}, now)
+			u.record(120, &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 27015}, now, p%6 == 0)
 		}
 		s.Tick(time.Second)
 	}
@@ -528,8 +528,8 @@ func TestGameModeActivityWindowAndIgnoredPorts(t *testing.T) {
 	u := s.trackUDP(sl0, Fam4)
 
 	// Background DNS/QUIC probes followed by a 60s idle gap must neither trigger nor taint the socket.
-	u.record(64, &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 53}, now)
-	u.record(120, &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 443}, now)
+	u.record(64, &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 53}, now, false)
+	u.record(120, &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 443}, now, false)
 	now = now.Add(60 * time.Second)
 	s.Tick(time.Second)
 	if sl0.gameActive {
@@ -539,8 +539,8 @@ func TestGameModeActivityWindowAndIgnoredPorts(t *testing.T) {
 	// Sustaining small UDP packets for 6s should start a fresh window and steer new TCP flows to eth1.
 	for i := 0; i < 6; i++ {
 		now = now.Add(time.Second)
-		for p := 0; p < 10; p++ {
-			u.record(120, &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 27015}, now)
+		for p := 0; p < 12; p++ {
+			u.record(120, &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 27015}, now, p%6 == 0)
 		}
 		s.Tick(time.Second)
 	}

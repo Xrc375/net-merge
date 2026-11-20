@@ -159,7 +159,7 @@ func TestEcoModeWithGameMode(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		now = now.Add(time.Second)
 		for p := 0; p < 20; p++ {
-			u.record(120, &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 27015}, now)
+			u.record(120, &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 27015}, now, p%2 == 0)
 		}
 		s.Tick(time.Second)
 	}

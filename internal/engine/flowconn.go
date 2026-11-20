@@ -68,50 +68,90 @@ func (b *Balancer) DialPinned(ctx context.Context, host string, port int) (net.C
 	return &slotConn{TCPConn: c.(*net.TCPConn), sl: sl, fam: f, s: b.S, activity: b.S.track(sl, f)}, nil
 }
 
-// udpFlowActivity tracks per-socket UDP packet statistics within an active burst window to detect real-time game or voice traffic.
+// udpFlowActivity tracks per-socket bidirectional UDP packet statistics to detect real-time interactive traffic.
 type udpFlowActivity struct {
-	mu                        sync.Mutex
-	started, lastActive       time.Time
-	packets, smallPkts, bytes int64
+	mu                   sync.Mutex
+	started, lastActive  time.Time
+	winStart             time.Time
+	winRxPkts, winTxPkts int64
+	winBytes             int64
+	rxPkts, txPkts       int64
+	smallPkts, bytes     int64
 }
 
-func (u *udpFlowActivity) record(n int, addr net.Addr, now time.Time) {
-	// Skip non-game/background protocols per packet so a single DNS/QUIC probe does not permanently taint the socket.
-	if ua, ok := addr.(*net.UDPAddr); ok && (ua.Port == 53 || ua.Port == 123 || ua.Port == 443 || ua.Port == 5353) {
-		return
+func (u *udpFlowActivity) record(n int, addr net.Addr, now time.Time, isOut bool) {
+	// Skip system broadcast/discovery ports; keep UDP 443 for Steam/CS2 SDR relays.
+	if ua, ok := addr.(*net.UDPAddr); ok {
+		if ua.Port == 53 || ua.Port == 123 || ua.Port == 1900 || ua.Port == 5353 {
+			return
+		}
 	}
 	u.mu.Lock()
-	// Start a fresh activity window on the first valid packet or after >3s of idle time.
-	if u.started.IsZero() || now.Sub(u.lastActive) > 3*time.Second {
+	defer u.mu.Unlock()
+
+	// Allow up to 3.5s gap so Alt-Tab frame throttling does not reset active game state.
+	if u.started.IsZero() || now.Sub(u.lastActive) > 3500*time.Millisecond {
 		u.started = now
-		u.packets = 0
-		u.smallPkts = 0
-		u.bytes = 0
+		u.winStart = now
+		u.rxPkts, u.txPkts, u.smallPkts, u.bytes = 0, 0, 0, 0
+		u.winRxPkts, u.winTxPkts, u.winBytes = 0, 0, 0
 	}
 	if now.After(u.lastActive) {
 		u.lastActive = now
 	}
-	u.packets++
+
+	if isOut {
+		u.txPkts++
+	} else {
+		u.rxPkts++
+	}
 	u.bytes += int64(n)
-	if n < 600 {
+	if n < 1200 {
 		u.smallPkts++
 	}
-	u.mu.Unlock()
+
+	if now.Sub(u.winStart) >= 2*time.Second {
+		u.winStart = now
+		u.winRxPkts, u.winTxPkts, u.winBytes = 0, 0, 0
+	}
+	if isOut {
+		u.winTxPkts++
+	} else {
+		u.winRxPkts++
+	}
+	u.winBytes += int64(n)
 }
 
-// isGameLike reports whether the current active window sustains a low-bandwidth, steady stream of small UDP packets (>=5s, >=5 pkts/s, >=50% <600B, <1Mbps).
 func (u *udpFlowActivity) isGameLike(now time.Time) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.started.IsZero() || now.Sub(u.lastActive) > 3*time.Second {
+
+	if u.started.IsZero() || now.Sub(u.lastActive) > 3500*time.Millisecond {
 		return false
 	}
 	dur := now.Sub(u.started).Seconds()
-	if dur < 5 {
+	if dur < 5.0 {
 		return false
 	}
-	pkts, small := float64(u.packets), float64(u.smallPkts)
-	return pkts/dur >= 5 && small >= 0.5*pkts && float64(u.bytes)*8/dur < 1_000_000
+
+	// Require asymmetric bidirectional traffic (rx >= 8 pps, tx >= 1 pps) to reject idle keep-alives.
+	winDur := now.Sub(u.winStart).Seconds()
+	if winDur >= 1.0 {
+		if float64(u.winRxPkts)/winDur < 8.0 || float64(u.winTxPkts)/winDur < 1.0 || float64(u.winBytes)*8.0/winDur < 8_000 {
+			return false
+		}
+	}
+
+	totalPkts := float64(u.rxPkts + u.txPkts)
+	rxPPS := float64(u.rxPkts) / dur
+	txPPS := float64(u.txPkts) / dur
+	avgBps := float64(u.bytes) * 8.0 / dur
+
+	return rxPPS >= 8.0 &&
+		txPPS >= 1.0 &&
+		float64(u.smallPkts) >= 0.55*totalPkts &&
+		avgBps >= 8_000 &&
+		avgBps < 2_500_000
 }
 
 type slotPacketConn struct {
@@ -128,7 +168,7 @@ func (c *slotPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	if n > 0 {
 		c.sl.bytesIn[c.fam].Add(int64(n))
 		if c.udp != nil {
-			c.udp.record(n, a, c.s.now())
+			c.udp.record(n, a, c.s.now(), false)
 		}
 		c.sl.throttlePacket(true, n)
 	}
@@ -141,7 +181,7 @@ func (c *slotPacketConn) WriteTo(p []byte, a net.Addr) (int, error) {
 	if n > 0 {
 		c.sl.bytesOut[c.fam].Add(int64(n))
 		if c.udp != nil {
-			c.udp.record(n, a, c.s.now())
+			c.udp.record(n, a, c.s.now(), true)
 		}
 	}
 	return n, err
