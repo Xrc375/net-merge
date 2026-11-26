@@ -603,8 +603,9 @@ func (s *Scheduler) AcquirePreferred(prefKey string, f Family, skip map[string]s
 		}
 	}
 	if pref != nil && (pref.state[f] == stateUp || !hasTier0) {
-		pref.actF[f].Add(1)
 		pref.active.Add(1)
+		pref.actF[f].Add(1)
+		pref.total.Add(1)
 		s.mu.Unlock()
 		return pref
 	}
