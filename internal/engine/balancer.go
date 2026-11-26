@@ -181,7 +181,8 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 			if stick && sl.key == prefKey {
 				b.Sticky.Delete(host)
 			}
-		} else if c.retry {
+		}
+		if c.retry {
 			b.S.TriggerProbe(sl, f)
 		}
 		if sl.key == prefKey {
