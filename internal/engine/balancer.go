@@ -82,7 +82,7 @@ func NewBalancer(s *Scheduler) *Balancer {
 	return &Balancer{
 		S:              s,
 		Sticky:         NewStickyCache(15 * time.Minute),
-		ConnectTimeout: 3 * time.Second,
+		ConnectTimeout: 4 * time.Second,
 		FailCooldown:   15 * time.Second,
 	}
 }

@@ -14,13 +14,13 @@ type stickyEntry struct {
 
 // StickyCache keeps per-host NIC affinity with TTL to prevent IP drifting on auth/banking sessions.
 type StickyCache struct {
-	mu        sync.RWMutex
-	ttl       time.Duration
-	entries   map[string]stickyEntry
-	now       func() time.Time
-	mode      string // "smart" (default), "all", "off"
-	patterns  []string
-	maxSize   int
+	mu       sync.RWMutex
+	ttl      time.Duration
+	entries  map[string]stickyEntry
+	now      func() time.Time
+	mode     string // "smart" (default), "all", "off"
+	patterns []string
+	maxSize  int
 }
 
 var defaultStickyPatterns = []string{
@@ -57,6 +57,15 @@ func (c *StickyCache) SetMode(mode string) {
 	c.mu.Unlock()
 }
 
+func matchStickyPattern(host, pattern string) bool {
+	// Patterns ending with "." (e.g. "id.", "gov.") must match on a label boundary
+	// so "id." matches "id.apple.com" without false-matching "android.googleapis.com".
+	if strings.HasSuffix(pattern, ".") {
+		return strings.HasPrefix(host, pattern) || strings.Contains(host, "."+pattern)
+	}
+	return strings.Contains(host, pattern)
+}
+
 // ShouldStick decides whether a destination host should pin to a single egress NIC.
 func (c *StickyCache) ShouldStick(host string) bool {
 	c.mu.RLock()
@@ -72,7 +81,7 @@ func (c *StickyCache) ShouldStick(host string) bool {
 	default: // "smart"
 		h := strings.ToLower(host)
 		for _, p := range patterns {
-			if strings.Contains(h, p) {
+			if matchStickyPattern(h, p) {
 				return true
 			}
 		}
@@ -95,10 +104,25 @@ func (c *StickyCache) Set(host, slotKey string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	if len(c.entries) >= c.maxSize {
+	if _, exists := c.entries[host]; !exists && c.maxSize > 0 && len(c.entries) >= c.maxSize {
+		// 1. First pass: purge expired entries.
 		for k, e := range c.entries {
 			if now.After(e.expiresAt) {
 				delete(c.entries, k)
+			}
+		}
+		// 2. Hard cap: if still full, evict 25% to prevent unbounded growth and O(N) lock thrashing.
+		if len(c.entries) >= c.maxSize {
+			evict := c.maxSize / 4
+			if evict < 1 {
+				evict = 1
+			}
+			for k := range c.entries {
+				delete(c.entries, k)
+				evict--
+				if evict <= 0 {
+					break
+				}
 			}
 		}
 	}

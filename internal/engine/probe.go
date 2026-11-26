@@ -16,7 +16,7 @@ var probeTargets = [2][]string{
 
 const (
 	probeTimeout   = 1500 * time.Millisecond
-	probeEveryUp   = 5 * time.Second
+	probeEveryUp   = 10 * time.Second
 	probeEveryDown = 2 * time.Second
 )
 

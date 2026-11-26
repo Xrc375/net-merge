@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -13,11 +14,29 @@ func TestStickyCacheSmartMatchingAndTTL(t *testing.T) {
 	now := time.Date(2026, 11, 26, 18, 0, 0, 0, time.UTC)
 	sc.now = func() time.Time { return now }
 
-	if !sc.ShouldStick("login.microsoftonline.com") || !sc.ShouldStick("ebank.esunbank.com.tw") {
-		t.Fatal("expected auth/banking domains to be sticky in smart mode")
+	mustStick := []string{
+		"login.microsoftonline.com",
+		"ebank.esunbank.com.tw",
+		"id.apple.com",
+		"portal.id.example.com",
+		"www.gov.tw",
 	}
-	if sc.ShouldStick("cdn.steampowered.com") {
-		t.Fatal("expected bulk CDN domain NOT to be sticky in smart mode")
+	for _, h := range mustStick {
+		if !sc.ShouldStick(h) {
+			t.Fatalf("expected %q to be sticky in smart mode", h)
+		}
+	}
+
+	mustNotStick := []string{
+		"cdn.steampowered.com",
+		"android.googleapis.com",
+		"vid.cloudfront.net",
+		"rapid.cdn.example.com",
+	}
+	for _, h := range mustNotStick {
+		if sc.ShouldStick(h) {
+			t.Fatalf("expected %q NOT to be sticky in smart mode", h)
+		}
 	}
 
 	sc.Set("login.microsoftonline.com", "Ethernet")
@@ -31,6 +50,18 @@ func TestStickyCacheSmartMatchingAndTTL(t *testing.T) {
 	}
 }
 
+func TestStickyCacheHardCap(t *testing.T) {
+	sc := NewStickyCache(15 * time.Minute)
+	sc.maxSize = 64
+
+	for i := 0; i < 200; i++ {
+		sc.Set(fmt.Sprintf("10.0.0.%d", i), "Ethernet")
+		if len(sc.entries) > sc.maxSize {
+			t.Fatalf("cache exceeded maxSize %d: got %d", sc.maxSize, len(sc.entries))
+		}
+	}
+}
+
 func TestAcquirePreferredAndFailover(t *testing.T) {
 	s := NewScheduler([]nics.Nic{
 		{Name: "Ethernet", Index: 1, IP: net.ParseIP("192.168.1.10"), Weight: 1},
@@ -40,7 +71,6 @@ func TestAcquirePreferredAndFailover(t *testing.T) {
 		s.SetState(sl, Fam4, true)
 	}
 
-	// 即使反覆請求，只要 Ethernet 健康就應持續命中
 	for i := 0; i < 5; i++ {
 		sl := s.AcquirePreferred("Ethernet", Fam4, nil)
 		if sl.key != "Ethernet" {
@@ -49,7 +79,6 @@ func TestAcquirePreferredAndFailover(t *testing.T) {
 		s.ReleaseFor(sl, Fam4)
 	}
 
-	// 模擬 Ethernet 斷線 -> 必須自動轉移到 Wi-Fi
 	s.SetState(s.slots[0], Fam4, false)
 	sl := s.AcquirePreferred("Ethernet", Fam4, nil)
 	if sl.key != "Wi-Fi" {
