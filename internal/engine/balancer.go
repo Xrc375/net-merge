@@ -178,11 +178,11 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		c := classify(err)
 		if c.linkDown {
 			b.S.Fail(sl, f, b.FailCooldown)
+		}
+		if c.retry {
 			if stick && sl.key == prefKey {
 				b.Sticky.Delete(host)
 			}
-		}
-		if c.retry {
 			b.S.TriggerProbe(sl, f)
 		}
 		if sl.key == prefKey {

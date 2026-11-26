@@ -64,8 +64,9 @@ func probe(sl *Slot, f Family) bool {
 }
 
 type probeJob struct {
-	sl *Slot
-	f  Family
+	sl  *Slot
+	f   Family
+	gen uint64
 }
 
 // TriggerProbe immediately probes a slot in the background (e.g. after a dial timeout)
@@ -76,15 +77,16 @@ func (s *Scheduler) TriggerProbe(sl *Slot, f Family) {
 	}
 	s.mu.Lock()
 	sl.lastProbe[f] = s.now()
+	gen := sl.probeGen[f]
 	s.mu.Unlock()
 	go func() {
 		defer sl.probing[f].Store(false)
-		s.SetState(sl, f, probe(sl, f))
+		s.setStateGen(sl, f, probe(sl, f), gen)
 	}()
 }
 
 // RunProbes checks every adapter's internet access per address family: new ones immediately,
-// healthy ones every 5s, dead ones every 2s so they rejoin quickly. Runs until stop is closed.
+// healthy ones every 10s, dead ones every 2s so they rejoin quickly. Runs until stop is closed.
 func (s *Scheduler) RunProbes(stop <-chan struct{}) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
@@ -97,7 +99,7 @@ func (s *Scheduler) RunProbes(stop <-chan struct{}) {
 		for _, j := range s.probeDue() {
 			go func(job probeJob) {
 				defer job.sl.probing[job.f].Store(false)
-				s.SetState(job.sl, job.f, probe(job.sl, job.f))
+				s.setStateGen(job.sl, job.f, probe(job.sl, job.f), job.gen)
 			}(j)
 		}
 	}
@@ -124,11 +126,14 @@ func (s *Scheduler) probeDue() []probeJob {
 			case stateDown:
 				every = probeEveryDown
 			}
-			if now.Sub(sl.lastProbe[f]) >= every {
-				sl.lastProbe[f] = now
-				sl.probing[f].Store(true)
-				due = append(due, probeJob{sl, f})
+			if now.Sub(sl.lastProbe[f]) < every {
+				continue
 			}
+			if !sl.probing[f].CompareAndSwap(false, true) {
+				continue
+			}
+			sl.lastProbe[f] = now
+			due = append(due, probeJob{sl, f, sl.probeGen[f]})
 		}
 	}
 	return due

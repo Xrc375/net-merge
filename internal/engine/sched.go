@@ -56,6 +56,7 @@ type Slot struct {
 	state           [2]linkState
 	lastProbe       [2]time.Time
 	downUntil       [2]time.Time
+	probeGen        [2]uint64
 	lastIn, lastOut [2]int64
 	rateIn, rateOut [2]float64 // bytes/s over the last tick
 	peak            [2]float64 // observed capacity: max recent rateIn+rateOut
@@ -268,6 +269,7 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 			if changed {
 				found.state[f] = stateUnknown
 				found.lastProbe[f], found.downUntil[f] = time.Time{}, time.Time{}
+				found.probeGen[f]++
 				found.peak[f] = 0
 				if s.auto {
 					found.weight[f] = 1
@@ -532,6 +534,20 @@ func (s *Scheduler) ReleaseFor(sl *Slot, f Family) {
 func (s *Scheduler) SetState(sl *Slot, f Family, up bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	sl.probeGen[f]++
+	s.applyStateLocked(sl, f, up)
+}
+
+func (s *Scheduler) setStateGen(sl *Slot, f Family, up bool, gen uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sl.probeGen[f] != gen {
+		return
+	}
+	s.applyStateLocked(sl, f, up)
+}
+
+func (s *Scheduler) applyStateLocked(sl *Slot, f Family, up bool) {
 	if up {
 		sl.state[f] = stateUp
 		sl.downUntil[f] = time.Time{}
@@ -544,6 +560,7 @@ func (s *Scheduler) SetState(sl *Slot, f Family, up bool) {
 func (s *Scheduler) Fail(sl *Slot, f Family, cooldown time.Duration) {
 	s.mu.Lock()
 	sl.downUntil[f] = s.now().Add(cooldown)
+	sl.probeGen[f]++
 	s.mu.Unlock()
 	sl.failed.Add(1)
 }
@@ -578,7 +595,8 @@ func (s *Scheduler) Snapshot() []SlotStats {
 
 // AcquirePreferred returns the slot matching prefKey if it is present, weighted, not skipped,
 // not in cooldown/down, and does not lose in tier priority to an already-up NIC.
-// Otherwise it falls back to normal weighted AcquireFor.
+// A valid sticky session takes precedence over Game/Eco scoring to preserve source-IP
+// consistency for authentication sessions; otherwise it falls back to AcquireFor.
 func (s *Scheduler) AcquirePreferred(prefKey string, f Family, skip map[string]struct{}) *Slot {
 	if prefKey == "" {
 		return s.AcquireFor(f, skip)
