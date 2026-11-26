@@ -40,24 +40,71 @@ print("\n=== Classification Report ===")
 print(classification_report(y_test, y_pred, target_names=["Bulk/Media (0)", "Interactive (1)"], digits=4))
 
 # 4. 繪製簡報用評估圖 (左：混淆矩陣，右：特徵空間散佈圖)
-fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), dpi=200)
-ConfusionMatrixDisplay(cm, display_labels=["Bulk (0)", "Interactive (1)"]).plot(
-    ax=axes[0], cmap="YlGn", colorbar=False
-)
-axes[0].set_title("Edge Classifier Confusion Matrix")
+from matplotlib.colors import LinearSegmentedColormap
 
-for lbl, name, color in [(0, "Bulk / Media (0)", "#475569"), (1, "Interactive UDP (1)", "#0F766E")]:
-    sub = df[df["label"] == lbl]
-    axes[1].scatter(sub["small_ratio"], sub["rx_pps"], alpha=0.65, label=name, c=color, s=24)
-axes[1].set_xlabel("Small Packet Ratio (<1200B)")
-axes[1].set_ylabel("Rx Packets / sec (PPS)")
-axes[1].set_title("Feature Space Separability")
-axes[1].legend()
-axes[1].grid(alpha=0.3)
+bg_fig = "#0b0f14"
+bg_ax = "#121820"
+fg_text = "#e2e8f0"
+fg_muted = "#94a3b8"
+grid_col = "#243040"
+lime = "#a3e635"
 
-plt.tight_layout()
-plt.savefig("ml_eval.png", dpi=200)
-print("已輸出評估圖表：ml_eval.png")
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.2), dpi=300, facecolor=bg_fig)
+
+# 1. 左圖：Confusion Matrix（數量 + 列百分比）
+ax0 = axes[0]
+ax0.set_facecolor(bg_ax)
+cmap = LinearSegmentedColormap.from_list("dark_lime", ["#151d28", "#1d3b2f", "#4d7c0f", "#a3e635"])
+ax0.imshow(cm, cmap=cmap, vmin=0, vmax=cm.max())
+
+row_sums = cm.sum(axis=1, keepdims=True)
+acc = cm.trace() / cm.sum() * 100.0
+labels = ["Bulk (0)", "Interactive (1)"]
+
+ax0.set_xticks([0, 1], labels, color=fg_text, fontsize=10.5)
+ax0.set_yticks([0, 1], labels, color=fg_text, fontsize=10.5)
+ax0.set_xlabel("Predicted label", color=fg_text, fontsize=11, labelpad=8)
+ax0.set_ylabel("True label", color=fg_text, fontsize=11, labelpad=8)
+ax0.set_title(f"Edge Classifier Confusion Matrix (Acc: {acc:.1f}%)", color=fg_text, fontsize=12.5, fontweight="bold", pad=12)
+
+for i in range(cm.shape[0]):
+    for j in range(cm.shape[1]):
+        val = cm[i, j]
+        pct = (val / row_sums[i, 0]) * 100.0 if row_sums[i, 0] > 0 else 0.0
+        txt_col = "#0b0f14" if val > cm.max() * 0.55 else "#f8fafc"
+        ax0.text(
+            j, i, f"{val}\n({pct:.1f}%)",
+            ha="center", va="center",
+            color=txt_col, fontsize=13, fontweight="bold"
+        )
+
+for spine in ax0.spines.values():
+    spine.set_edgecolor(grid_col)
+
+# 2. 右圖：Feature Space Separability
+ax1 = axes[1]
+ax1.set_facecolor(bg_ax)
+
+bulk = df[df["label"] == 0]
+inter = df[df["label"] == 1]
+
+ax1.scatter(bulk["small_ratio"], bulk["rx_pps"], c="#94a3b8", edgecolors="#cbd5e1", linewidths=0.4, alpha=0.72, s=36, label="Bulk / Media (0)")
+ax1.scatter(inter["small_ratio"], inter["rx_pps"], c=lime, edgecolors="#ecfccb", linewidths=0.4, alpha=0.82, s=36, label="Interactive UDP (1)")
+
+ax1.set_xlabel("Small Packet Ratio (<1200B)", color=fg_text, fontsize=11, labelpad=8)
+ax1.set_ylabel("Rx Packets / sec (PPS)", color=fg_text, fontsize=11, labelpad=8)
+ax1.set_title("Feature Space Separability", color=fg_text, fontsize=12.5, fontweight="bold", pad=12)
+ax1.tick_params(colors=fg_muted, labelsize=10)
+ax1.grid(True, color=grid_col, linestyle="--", linewidth=0.7, alpha=0.6)
+
+for spine in ax1.spines.values():
+    spine.set_edgecolor(grid_col)
+
+ax1.legend(facecolor="#0f151d", edgecolor=grid_col, labelcolor=fg_text, fontsize=10, framealpha=0.92)
+
+plt.tight_layout(pad=2.0)
+plt.savefig("ml_eval_dark.png", dpi=300, facecolor=bg_fig)
+print("已輸出深色評估圖表：ml_eval_dark.png")
 
 # 5. 權重折疊並自動寫出 Go 推論檔至 internal/ml/model_gen.go
 w_folded = clf.coef_[0] / scaler.scale_
