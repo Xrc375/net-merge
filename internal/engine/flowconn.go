@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"net-merge/internal/ml"
 	"net-merge/internal/nics"
 )
 
@@ -77,6 +78,10 @@ type udpFlowActivity struct {
 	winBytes             int64
 	rxPkts, txPkts       int64
 	smallPkts, bytes     int64
+
+	collector  *ml.WindowCollector
+	lastSample ml.FeatureSample
+	hasSample  bool
 }
 
 func (u *udpFlowActivity) record(n int, addr net.Addr, now time.Time, isOut bool) {
@@ -120,38 +125,31 @@ func (u *udpFlowActivity) record(n int, addr net.Addr, now time.Time, isOut bool
 		u.winRxPkts++
 	}
 	u.winBytes += int64(n)
+	
+	if u.collector == nil {
+		u.collector = ml.NewWindowCollector("traffic_features.csv")
+	}
+	if sample, ready := u.collector.RecordPacket(n, !isOut, now); ready {
+		u.lastSample = sample
+		u.hasSample = true
+	}
+		
 }
 
 func (u *udpFlowActivity) isGameLike(now time.Time) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
+	// 保留 3.5 秒 Alt-Tab 降頻容忍與 5 秒持續門檻，作為時序平滑後處理
 	if u.started.IsZero() || now.Sub(u.lastActive) > 3500*time.Millisecond {
 		return false
 	}
-	dur := now.Sub(u.started).Seconds()
-	if dur < 5.0 {
+	if now.Sub(u.started).Seconds() < 5.0 || !u.hasSample {
 		return false
 	}
 
-	// Require asymmetric bidirectional traffic (rx >= 8 pps, tx >= 1 pps) to reject idle keep-alives.
-	winDur := now.Sub(u.winStart).Seconds()
-	if winDur >= 1.0 {
-		if float64(u.winRxPkts)/winDur < 8.0 || float64(u.winTxPkts)/winDur < 1.0 || float64(u.winBytes)*8.0/winDur < 8_000 {
-			return false
-		}
-	}
-
-	totalPkts := float64(u.rxPkts + u.txPkts)
-	rxPPS := float64(u.rxPkts) / dur
-	txPPS := float64(u.txPkts) / dur
-	avgBps := float64(u.bytes) * 8.0 / dur
-
-	return rxPPS >= 8.0 &&
-		txPPS >= 1.0 &&
-		float64(u.smallPkts) >= 0.55*totalPkts &&
-		avgBps >= 8_000 &&
-		avgBps < 2_500_000
+	// 改由權重折疊後的 Edge ML 模型推論互動流量機率
+	return ml.PredictInteractiveProb(u.lastSample) >= 0.5
 }
 
 type slotPacketConn struct {
