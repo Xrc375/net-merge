@@ -4,3 +4,13 @@ dist/
 result
 *.syso
 .DS_Store
+
+# Local builds & ML dataset
+*.exe
+*.zip
+traffic_features.csv
+
+# Local builds & ML dataset
+*.exe
+*.zip
+traffic_features.csv
