@@ -18,6 +18,7 @@ import (
 // only call DialTCP and Relay, so the balancing logic lives in one place.
 type Balancer struct {
 	S              *Scheduler
+	Sticky         *StickyCache
 	ConnectTimeout time.Duration
 	FailCooldown   time.Duration
 	v6mode         atomic.Int32
@@ -78,7 +79,12 @@ func (b *Balancer) V6State() string {
 }
 
 func NewBalancer(s *Scheduler) *Balancer {
-	return &Balancer{S: s, ConnectTimeout: 8 * time.Second, FailCooldown: 15 * time.Second}
+	return &Balancer{
+		S:              s,
+		Sticky:         NewStickyCache(15 * time.Minute),
+		ConnectTimeout: 3 * time.Second,
+		FailCooldown:   15 * time.Second,
+	}
 }
 
 // Windows socket error codes; the portable syscall.E* constants don't match them on Windows.
@@ -137,6 +143,12 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
 		f, network = Fam6, "tcp6"
 	}
+	stick := b.Sticky != nil && b.Sticky.ShouldStick(host)
+	var prefKey string
+	if stick {
+		prefKey, _ = b.Sticky.Get(host)
+	}
+
 	tried := map[string]struct{}{}
 	rep := byte(repFailure)
 	var lastErr error = errors.New("no usable network adapter")
@@ -144,7 +156,7 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		rep, lastErr = repNetUnreachable, errors.New("no usable IPv6 adapter")
 	}
 	for {
-		sl := b.S.AcquireFor(f, tried)
+		sl := b.S.AcquirePreferred(prefKey, f, tried)
 		if sl == nil {
 			return nil, nil, f, &dialError{rep: rep, err: lastErr}
 		}
@@ -157,12 +169,23 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		}
 		conn, err := d.DialContext(ctx, network, net.JoinHostPort(host, strconv.Itoa(port)))
 		if err == nil {
+			if stick {
+				b.Sticky.Set(host, sl.key)
+			}
 			return conn, sl, f, nil
 		}
 		b.S.ReleaseFor(sl, f)
 		c := classify(err)
 		if c.linkDown {
 			b.S.Fail(sl, f, b.FailCooldown)
+			if stick && sl.key == prefKey {
+				b.Sticky.Delete(host)
+			}
+		} else if c.retry {
+			b.S.TriggerProbe(sl, f)
+		}
+		if sl.key == prefKey {
+			prefKey = ""
 		}
 		rep, lastErr = c.rep, err
 		if !c.retry || ctx.Err() != nil {

@@ -575,3 +575,29 @@ func (s *Scheduler) Snapshot() []SlotStats {
 	}
 	return out
 }
+
+// AcquirePreferred tries to acquire a specific healthy NIC (used by Sticky Session).
+// Falls back to normal AcquireFor if the preferred NIC is absent, skipped, or unhealthy.
+func (s *Scheduler) AcquirePreferred(preferredKey string, f Family, skip map[string]struct{}) *Slot {
+	if preferredKey != "" {
+		if _, no := skip[preferredKey]; !no {
+			s.mu.Lock()
+			now := s.now()
+			for _, sl := range s.slots {
+				if sl.key == preferredKey &&
+					sl.present &&
+					sl.ip(f) != nil &&
+					sl.state[f] != stateDown &&
+					!now.Before(sl.downUntil[f]) {
+					sl.active.Add(1)
+					sl.actF[f].Add(1)
+					sl.total.Add(1)
+					s.mu.Unlock()
+					return sl
+				}
+			}
+			s.mu.Unlock()
+		}
+	}
+	return s.AcquireFor(f, skip)
+}

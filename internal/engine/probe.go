@@ -1,22 +1,23 @@
 package engine
 
 import (
+	"context"
 	"net"
 	"time"
 
 	"net-merge/internal/nics"
 )
 
-// Internet reachability probes: a TCP connect to a well-known anycast IP, bound to the NIC.
+// Internet reachability probes: concurrent TCP connects to well-known anycast IPs, bound to the NIC.
 var probeTargets = [2][]string{
 	Fam4: {"1.1.1.1:443", "8.8.8.8:443"},
 	Fam6: {"[2606:4700:4700::1111]:443", "[2001:4860:4860::8888]:443"},
 }
 
 const (
-	probeTimeout   = 2 * time.Second
-	probeEveryUp   = 15 * time.Second
-	probeEveryDown = 4 * time.Second
+	probeTimeout   = 1500 * time.Millisecond
+	probeEveryUp   = 5 * time.Second
+	probeEveryDown = 2 * time.Second
 )
 
 func probe(sl *Slot, f Family) bool {
@@ -28,10 +29,34 @@ func probe(sl *Slot, f Family) bool {
 	if f == Fam6 {
 		network = "tcp6"
 	}
-	for _, t := range probeTargets[f] {
-		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: ip}, Control: nics.ForceEgress(sl.Index, f == Fam6), Timeout: probeTimeout}
-		if c, err := d.Dial(network, t); err == nil {
-			c.Close()
+	targets := probeTargets[f]
+	if len(targets) == 0 {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+
+	res := make(chan bool, len(targets))
+	for _, t := range targets {
+		go func(target string) {
+			d := net.Dialer{
+				LocalAddr: &net.TCPAddr{IP: ip},
+				Control:   nics.ForceEgress(sl.Index, f == Fam6),
+				Timeout:   probeTimeout,
+			}
+			if c, err := d.DialContext(ctx, network, target); err == nil {
+				c.Close()
+				res <- true
+				return
+			}
+			res <- false
+		}(t)
+	}
+
+	for range targets {
+		if <-res {
+			cancel()
 			return true
 		}
 	}
@@ -43,10 +68,23 @@ type probeJob struct {
 	f  Family
 }
 
+// TriggerProbe immediately probes a slot in the background (e.g. after a dial timeout)
+// so a blackholed NIC is sidelined within ~1.5s instead of waiting for the periodic tick.
+func (s *Scheduler) TriggerProbe(sl *Slot, f Family) {
+	if sl == nil || sl.ip(f) == nil || !sl.probing[f].CompareAndSwap(false, true) {
+		return
+	}
+	s.mu.Lock()
+	sl.lastProbe[f] = s.now()
+	s.mu.Unlock()
+	go func() {
+		defer sl.probing[f].Store(false)
+		s.SetState(sl, f, probe(sl, f))
+	}()
+}
+
 // RunProbes checks every adapter's internet access per address family: new ones immediately,
-// healthy ones occasionally, dead ones more often so they rejoin quickly. A tether with no data
-// or a captive-portal Wi-Fi therefore never receives flows, and a recovered link is used again
-// within seconds. Runs until stop is closed (nil = forever).
+// healthy ones every 5s, dead ones every 2s so they rejoin quickly. Runs until stop is closed.
 func (s *Scheduler) RunProbes(stop <-chan struct{}) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
@@ -57,10 +95,10 @@ func (s *Scheduler) RunProbes(stop <-chan struct{}) {
 		case <-t.C:
 		}
 		for _, j := range s.probeDue() {
-			go func() {
-				defer j.sl.probing[j.f].Store(false)
-				s.SetState(j.sl, j.f, probe(j.sl, j.f))
-			}()
+			go func(job probeJob) {
+				defer job.sl.probing[job.f].Store(false)
+				s.SetState(job.sl, job.f, probe(job.sl, job.f))
+			}(j)
 		}
 	}
 }
