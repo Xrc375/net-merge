@@ -576,28 +576,38 @@ func (s *Scheduler) Snapshot() []SlotStats {
 	return out
 }
 
-// AcquirePreferred tries to acquire a specific healthy NIC (used by Sticky Session).
-// Falls back to normal AcquireFor if the preferred NIC is absent, skipped, or unhealthy.
-func (s *Scheduler) AcquirePreferred(preferredKey string, f Family, skip map[string]struct{}) *Slot {
-	if preferredKey != "" {
-		if _, no := skip[preferredKey]; !no {
-			s.mu.Lock()
-			now := s.now()
-			for _, sl := range s.slots {
-				if sl.key == preferredKey &&
-					sl.present &&
-					sl.ip(f) != nil &&
-					sl.state[f] != stateDown &&
-					!now.Before(sl.downUntil[f]) {
-					sl.active.Add(1)
-					sl.actF[f].Add(1)
-					sl.total.Add(1)
-					s.mu.Unlock()
-					return sl
-				}
-			}
-			s.mu.Unlock()
+// AcquirePreferred returns the slot matching prefKey if it is present, weighted, not skipped,
+// not in cooldown/down, and does not lose in tier priority to an already-up NIC.
+// Otherwise it falls back to normal weighted AcquireFor.
+func (s *Scheduler) AcquirePreferred(prefKey string, f Family, skip map[string]struct{}) *Slot {
+	if prefKey == "" {
+		return s.AcquireFor(f, skip)
+	}
+	s.mu.Lock()
+	now := s.now()
+	var pref *Slot
+	hasTier0 := false
+	for _, sl := range s.slots {
+		if !sl.present || sl.ip(f) == nil || sl.weight[f] <= 0 {
+			continue
+		}
+		if _, no := skip[sl.key]; no {
+			continue
+		}
+		inCooldown := now.Before(sl.downUntil[f])
+		if !inCooldown && sl.state[f] == stateUp {
+			hasTier0 = true
+		}
+		if sl.key == prefKey && !inCooldown && sl.state[f] != stateDown {
+			pref = sl
 		}
 	}
+	if pref != nil && (pref.state[f] == stateUp || !hasTier0) {
+		pref.actF[f].Add(1)
+		pref.active.Add(1)
+		s.mu.Unlock()
+		return pref
+	}
+	s.mu.Unlock()
 	return s.AcquireFor(f, skip)
 }

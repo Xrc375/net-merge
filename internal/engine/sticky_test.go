@@ -39,9 +39,9 @@ func TestStickyCacheSmartMatchingAndTTL(t *testing.T) {
 		}
 	}
 
-	sc.Set("login.microsoftonline.com", "Ethernet")
+	sc.Set("Login.MicrosoftOnline.COM", "Ethernet")
 	if got, ok := sc.Get("login.microsoftonline.com"); !ok || got != "Ethernet" {
-		t.Fatalf("expected Ethernet, got %q (ok=%v)", got, ok)
+		t.Fatalf("expected Ethernet (case-insensitive), got %q (ok=%v)", got, ok)
 	}
 
 	now = now.Add(11 * time.Minute)

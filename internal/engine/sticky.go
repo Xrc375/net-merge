@@ -90,8 +90,9 @@ func (c *StickyCache) ShouldStick(host string) bool {
 }
 
 func (c *StickyCache) Get(host string) (string, bool) {
+	h := strings.ToLower(strings.TrimSpace(host))
 	c.mu.RLock()
-	e, ok := c.entries[host]
+	e, ok := c.entries[h]
 	now := c.now()
 	c.mu.RUnlock()
 	if !ok || now.After(e.expiresAt) {
@@ -101,17 +102,19 @@ func (c *StickyCache) Get(host string) (string, bool) {
 }
 
 func (c *StickyCache) Set(host, slotKey string) {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "" {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	if _, exists := c.entries[host]; !exists && c.maxSize > 0 && len(c.entries) >= c.maxSize {
-		// 1. First pass: purge expired entries.
+	if _, exists := c.entries[h]; !exists && c.maxSize > 0 && len(c.entries) >= c.maxSize {
 		for k, e := range c.entries {
 			if now.After(e.expiresAt) {
 				delete(c.entries, k)
 			}
 		}
-		// 2. Hard cap: if still full, evict 25% to prevent unbounded growth and O(N) lock thrashing.
 		if len(c.entries) >= c.maxSize {
 			evict := c.maxSize / 4
 			if evict < 1 {
@@ -126,14 +129,15 @@ func (c *StickyCache) Set(host, slotKey string) {
 			}
 		}
 	}
-	c.entries[host] = stickyEntry{
+	c.entries[h] = stickyEntry{
 		slotKey:   slotKey,
 		expiresAt: now.Add(c.ttl),
 	}
 }
 
 func (c *StickyCache) Delete(host string) {
+	h := strings.ToLower(strings.TrimSpace(host))
 	c.mu.Lock()
-	delete(c.entries, host)
+	delete(c.entries, h)
 	c.mu.Unlock()
 }
