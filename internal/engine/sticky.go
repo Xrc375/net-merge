@@ -141,3 +141,20 @@ func (c *StickyCache) Delete(host string) {
 	delete(c.entries, h)
 	c.mu.Unlock()
 }
+
+// DeleteIf removes the sticky binding for host only if it still points to expectedSlotKey,
+// preventing an older failed dial from erasing a newer successful binding on another NIC.
+func (c *StickyCache) DeleteIf(host, expectedSlotKey string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[h]
+	if !ok || entry.slotKey != expectedSlotKey {
+		return false
+	}
+	delete(c.entries, h)
+	return true
+}

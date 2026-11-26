@@ -175,13 +175,21 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 			return conn, sl, f, nil
 		}
 		b.S.ReleaseFor(sl, f)
+		// Do not mutate Sticky state or trigger background probes if the parent request
+		// itself has been canceled or hit its overall deadline.
+		if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				rep = repHostUnreachable
+			}
+			return nil, nil, f, &dialError{rep: rep, err: ctx.Err()}
+		}
 		c := classify(err)
 		if c.linkDown {
 			b.S.Fail(sl, f, b.FailCooldown)
 		}
 		if c.retry {
 			if stick && sl.key == prefKey {
-				b.Sticky.Delete(host)
+				b.Sticky.DeleteIf(host, sl.key)
 			}
 			b.S.TriggerProbe(sl, f)
 		}
@@ -189,7 +197,7 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 			prefKey = ""
 		}
 		rep, lastErr = c.rep, err
-		if !c.retry || ctx.Err() != nil {
+		if !c.retry {
 			return nil, nil, f, &dialError{rep: rep, err: err}
 		}
 	}

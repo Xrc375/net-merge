@@ -71,18 +71,49 @@ type probeJob struct {
 
 // TriggerProbe immediately probes a slot in the background (e.g. after a dial timeout)
 // so a blackholed NIC is sidelined within ~1.5s instead of waiting for the periodic tick.
+// If a probe is already in flight, it sets probePending so the latest generation is probed
+// immediately upon completion without dropping the event.
 func (s *Scheduler) TriggerProbe(sl *Slot, f Family) {
-	if sl == nil || sl.ip(f) == nil || !sl.probing[f].CompareAndSwap(false, true) {
+	if sl == nil {
 		return
 	}
 	s.mu.Lock()
+	if !sl.present || sl.ip(f) == nil {
+		s.mu.Unlock()
+		return
+	}
+	if sl.probing[f] {
+		sl.probePending[f] = true
+		s.mu.Unlock()
+		return
+	}
+	sl.probing[f] = true
+	sl.probePending[f] = false
 	sl.lastProbe[f] = s.now()
 	gen := sl.probeGen[f]
 	s.mu.Unlock()
-	go func() {
-		defer sl.probing[f].Store(false)
-		s.setStateGen(sl, f, probe(sl, f), gen)
-	}()
+
+	go s.runProbeLoop(sl, f, gen)
+}
+
+func (s *Scheduler) runProbeLoop(sl *Slot, f Family, gen uint64) {
+	for {
+		up := probe(sl, f)
+		s.mu.Lock()
+		if sl.probeGen[f] == gen {
+			s.applyStateLocked(sl, f, up)
+		}
+		if !sl.probePending[f] || !sl.present || sl.ip(f) == nil {
+			sl.probing[f] = false
+			sl.probePending[f] = false
+			s.mu.Unlock()
+			return
+		}
+		sl.probePending[f] = false
+		sl.lastProbe[f] = s.now()
+		gen = sl.probeGen[f]
+		s.mu.Unlock()
+	}
 }
 
 // RunProbes checks every adapter's internet access per address family: new ones immediately,
@@ -97,10 +128,7 @@ func (s *Scheduler) RunProbes(stop <-chan struct{}) {
 		case <-t.C:
 		}
 		for _, j := range s.probeDue() {
-			go func(job probeJob) {
-				defer job.sl.probing[job.f].Store(false)
-				s.setStateGen(job.sl, job.f, probe(job.sl, job.f), job.gen)
-			}(j)
+			go s.runProbeLoop(j.sl, j.f, j.gen)
 		}
 	}
 }
@@ -116,7 +144,7 @@ func (s *Scheduler) probeDue() []probeJob {
 			continue
 		}
 		for _, f := range []Family{Fam4, Fam6} {
-			if sl.ip(f) == nil || sl.probing[f].Load() {
+			if sl.ip(f) == nil || sl.probing[f] {
 				continue
 			}
 			every := probeEveryUp
@@ -129,9 +157,8 @@ func (s *Scheduler) probeDue() []probeJob {
 			if now.Sub(sl.lastProbe[f]) < every {
 				continue
 			}
-			if !sl.probing[f].CompareAndSwap(false, true) {
-				continue
-			}
+			sl.probing[f] = true
+			sl.probePending[f] = false
 			sl.lastProbe[f] = now
 			due = append(due, probeJob{sl, f, sl.probeGen[f]})
 		}

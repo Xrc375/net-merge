@@ -47,7 +47,6 @@ type Slot struct {
 	active, total, failed atomic.Int64 // active is across families (idle check on removal)
 	actF                  [2]atomic.Int64
 	bytesIn, bytesOut     [2]atomic.Int64
-	probing               [2]atomic.Bool
 	limit                 atomic.Pointer[limitPair] // nil = unlimited; see limit.go
 
 	// guarded by Scheduler.mu
@@ -56,6 +55,8 @@ type Slot struct {
 	state           [2]linkState
 	lastProbe       [2]time.Time
 	downUntil       [2]time.Time
+	probing         [2]bool
+	probePending    [2]bool
 	probeGen        [2]uint64
 	lastIn, lastOut [2]int64
 	rateIn, rateOut [2]float64 // bytes/s over the last tick
@@ -535,15 +536,6 @@ func (s *Scheduler) SetState(sl *Slot, f Family, up bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sl.probeGen[f]++
-	s.applyStateLocked(sl, f, up)
-}
-
-func (s *Scheduler) setStateGen(sl *Slot, f Family, up bool, gen uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if sl.probeGen[f] != gen {
-		return
-	}
 	s.applyStateLocked(sl, f, up)
 }
 
